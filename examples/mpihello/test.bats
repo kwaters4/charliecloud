@@ -34,6 +34,7 @@ count_ranks () {
 
 @test "${ch_tag}/MPI version" {
     # shellcheck disable=SC2086
+    [[ -z $ch_cray ]] || skip 'serial launches unsupported on Cray'
     run ch-run $ch_unslurm "$ch_img" -- /hello/hello
     echo "$output"
     [[ $status -eq 0 ]]
@@ -61,6 +62,7 @@ count_ranks () {
     # This seems to start up the MPI infrastructure (daemons, etc.) within the
     # guest even though there's no mpirun.
     # shellcheck disable=SC2086
+    [[ -z $ch_cray ]] || skip 'serial launches unsupported on Cray'
     run ch-run $ch_unslurm "$ch_img" -- /hello/hello
     echo "$output"
     [[ $status -eq 0 ]]
