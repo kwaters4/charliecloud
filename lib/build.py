@@ -260,8 +260,14 @@ class Instruction(abc.ABC):
       options = self.options_str
       if (options != ""):
          options = " " + options
-      return ("%3s %s%s %s"
-              % (self.lineno, self.str_name(), options, self.str_()))
+      cache_msg = ''
+      if (ch.cache.build.mode != ch.Mode.DISABLED):
+         cache_msg = ''
+         if (self.cache_hit):
+            cache_msg = '(cached)'
+      return ("%3s %s %s%s %s"
+              % (self.lineno, cache_msg,
+                 self.str_name(), options, self.str_()))
 
    def announce(self):
       ch.INFO(self)
@@ -271,7 +277,7 @@ class Instruction(abc.ABC):
          self.execute_()
 
    @abc.abstractmethod
-   def cache_exe_(self):
+   def cache_(self):
       ...
 
    @abc.abstractmethod
@@ -314,7 +320,7 @@ class Instruction_Supported_Never(Instruction):
    def str_(self):
       return "(unsupported)"
 
-   def cache_exe_(self):
+   def cache_(self):
       pass
 
    def execute_(self):
@@ -340,7 +346,7 @@ class Arg(Instruction):
       else:
          return "%s='%s'" % (self.key, self.value)
 
-   def cache_exe_(self):
+   def cache_(self):
       # FIXME:
       pass
 
@@ -406,7 +412,7 @@ class I_copy(Instruction):
    def str_(self):
       return "%s -> %s" % (self.srcs, repr(self.dst))
 
-   def cache_exe_(self):
+   def cache_(self):
       #FIXME
       pass
 
@@ -614,7 +620,7 @@ class Env(Instruction):
    def str_(self):
       return "%s='%s'" % (self.key, self.value)
 
-   def cache_exe_(self):
+   def cache_(self):
       # FIXME
       pass
 
@@ -653,45 +659,54 @@ class I_from_(Instruction):
       self.base_ref = ch.Image_Ref(ch.tree_child(self.tree, "image_ref"))
       self.alias = ch.tree_child_terminal(self.tree, "from_alias",
                                           "IR_PATH_COMPONENT")
+      # cache related stuff
+      # FIXME: we need this stuff stored in the class attribute in order to
+      # give self.announce() cache hit/miss information when it is called
+      # in the main loop. I'm sure there are better alternatives.
+      self.base_image = ch.Image(self.base_ref)
+      self.state_id = ch.cache.build.id_for_from(self.base_image.unpack_path)
+      self.cache_hit = None
+      if (self.state_id):
+         self.cache_hit = True
+      else:
+         self.cache_hit = None
 
-   def cache_exe_(self, image, base_puller):
-      # FIXME: this function could go inside the cache object tbh.
-      global cache, state_ids, cache_hits
+   def cache_(self, image, base_puller):
+      global state_ids, cache_hits
+      cache = ch.cache.build
       rootfs = image.unpack_path
       basefs = self.base_image.unpack_path
 
-      # 1. get state id of base
+      cache_hits.append(self.cache_hit)
 
-      # check base state id; can be None.
-      base_id = cache.id_for_from(basefs)
-      if (not base_id):
-         ch.CACHE_V("FROM instruction id: %s (miss)" % base_id)
-         cache_hits.append(False)
+      if (not self.state_id): # base image does not exist
+         ch.CACHE_V("FROM instruction id: %s (miss)" % self.state_id)
          # pull and add base image.
          cache.worktree_add(basefs)
          base_puller.pull_to_unpacked()
          base_puller.done()
-         # compute base id and commit to cache.
-         base_id = cache.id_for_base(base_puller)
+         # compute pulled base id and commit to cache.
+         self.state_id = cache.id_for_base(base_puller)
          cache.branch_fixup(basefs)
-         cache.branch_commit(base_id, basefs, "FROM %s" % os.path.basename(basefs)) # FIXME
-         # checkout image to base commit.
+         cache.branch_commit(self.state_id, basefs,
+                             "FROM %s" % os.path.basename(basefs))
+         # create worktree IMG set to BASE tip commit.
          cache.worktree_add(rootfs, basefs)
       else:
-         ch.CACHE_V("FROM instruction id: %s (hit)" % base_id)
-         cache_hits.append(True)
+         ch.CACHE_V("FROM instruction id: %s (hit)" % self.state_id)
 
       # 2. prepare image
 
       if (cache.mode == ch.Mode.REBUILD and cache.branch_exists(rootfs)):
-         # reset image branch to base tip; this is neccessary for our id search
-         # algorithm, which will prefer ids in an existing branch.
-         commit = cache.cached_from_id(base_id, basefs).commit
+         # Force rebuild, i.e., set IMG tip to BASE tip; this forces misses
+         # when searching the IMG branch.
+         commit = cache.cached_from_id(self.state_id, basefs).commit
          cache.branch_checkout(commit, rootfs)
 
       if (not cache.branch_exists(rootfs)):
          cache.worktree_add(rootfs, basefs)
-      state_ids.append(base_id)
+      assert(self.state_id is not None)
+      state_ids.append(self.state_id)
 
    def execute_(self):
       # Complain about unsupported stuff.
@@ -722,15 +737,12 @@ class I_from_(Instruction):
       # Other error checking.
       if (str(image.ref) == str(self.base_ref)):
          ch.FATAL("output image ref same as FROM: %s" % self.base_ref)
-      # Initialize image.
-      self.base_image = ch.Image(self.base_ref)
       # Initiliaze image puller.
       pullet = pull.Image_Puller(self.base_image, not cli.no_cache)
-
-      # cache stuff
-      global cache
-      if (cache.mode == ch.Mode.ENABLED or cache.mode == ch.Mode.REBUILD):
-         self.cache_exe_(image, pullet)
+      # Cache operations.
+      cache = ch.cache.build
+      if (cache.mode != ch.Mode.DISABLED):
+         self.cache_(image, pullet)
       else:
          if (os.path.isdir(basefs)):
             VERBOSE("base image found: %s" % basefs)
@@ -756,40 +768,26 @@ class I_from_(Instruction):
 
 class Run(Instruction):
 
-   def cache_exe_(self):
-      global cache, state_ids, cache_hits
-      # state id caclutation variables
-      inst_action = self.cmd
-      inst_name   = self.str_name()
-      inst_opts   = self.options
-      pid         = state_ids[-1]
-      rootfs  = images[image_i].unpack_path
+   def __init__(self, *args):
+      super().__init__(*args)
+      global state_ids, cache_hits
+      assert(state_ids is not None)
+      self.parent_id = state_ids[-1]
 
-      ch.CACHE_V("list of ids: %s " % state_ids)
+   def cache_(self):
+      global state_ids, cache_hits
+      pid = self.parent_id
+      rootfs = images[image_i].unpack_path
+      state_ids.append(self.state_id)
 
-      # compute state id
-      sid = cache.id_for_exec(pid, inst_name, inst_opts, inst_action)
-      state_ids.append(sid)
-      ch.CACHE_V("instruction id: %s" % sid)
-
-      # if last instruction was a miss or cache mode is rebuild, we know all
-      # checks going forward miss.
-      if (cache_hits[-1] and cache.mode != ch.Mode.REBUILD):
-         # search for commit from state id
-         commit = cache.cached_from_id(sid, rootfs)
-
-         # hit
-         if (commit):
-            ch.CACHE_V("cache hit: %s" % str(commit))
-            cache_hits.append(True)
-            return
+      if (self.hit_commit):
+         cache_hits.append(True)
+         return
 
       # miss
-      ch.CACHE_V("cache miss")
       cache_hits.append(False)
 
       # get commit from parent id
-      ch.CACHE_V("parent instruction id: %s" % pid)
       commit = cache.cached_from_id(pid, rootfs)
       if (not commit):
          ch.FATAL("error finding parent commit")
@@ -801,7 +799,8 @@ class Run(Instruction):
 
       # clean up, commit, and restore.
       cache.branch_fixup(rootfs)
-      cache.branch_commit(sid, rootfs, cache.prep_note(inst_name, inst_action))
+      cache.branch_commit(self.state_id, rootfs,
+                          cache.prep_note(self.str_name(), self.cmd))
 
    def execute_inst(self, rootfs):
       fakeroot_config.init_maybe(rootfs, self.cmd, env.env_build)
@@ -824,8 +823,8 @@ class Run(Instruction):
 
    def execute_(self):
       global cache
-      if (cache.mode == ch.Mode.ENABLED or cache.mode == ch.Mode.REBUILD):
-         self.cache_exe_()
+      if (cache.mode != ch.Mode.DISABLED):
+         self.cache_()
          return
       self.execute_inst()
 
@@ -840,6 +839,23 @@ class I_run_exec(Run):
       self.cmd = [    variables_sub(unescape(i), env.env_build)
                   for i in ch.tree_terminals(self.tree, "STRING_QUOTED")]
 
+      # FIXME: Forgive my sins. The follow chunk, repeated in the next
+      # subclass, I_run_shell, has to be initialized after self.cmd, which is
+      # why it isn't in the parent class I_Run. This stuff is needed to report
+      # self.announce() in the main loop.
+      self.state_id = ch.cache.build.id_for_exec(self.parent_id,
+                                                 self.str_name(), # name
+                                                 self.options,    # options
+                                                 self.cmd)        # actions
+      self.hit_commit = None
+      if (cache_hits[-1] and ch.cache.build.mode != ch.Mode.REBUILD):
+         self.hit_commit = ch.cache.build.cached_from_id(self.state_id,
+                                                         images[image_i].unpack_path) 
+      if (self.hit_commit):
+         self.cache_hit = True
+      else:
+         self.cache_hit = None
+
 
 class I_run_shell(Run):
 
@@ -851,6 +867,20 @@ class I_run_shell(Run):
       super().__init__(*args)
       cmd = ch.tree_terminals_cat(self.tree, "LINE_CHUNK")
       self.cmd = env.shell + [cmd]
+
+      # FIXME: eek
+      self.state_id = ch.cache.build.id_for_exec(self.parent_id,
+                                                 self.str_name(), # name
+                                                 self.options,    # options
+                                                 self.cmd)        # actions
+      self.hit_commit = None
+      if (cache_hits[-1] and ch.cache.build.mode != ch.Mode.REBUILD):
+         self.hit_commit = ch.cache.build.cached_from_id(self.state_id,
+                                                         images[image_i].unpack_path) 
+      if (self.hit_commit):
+         self.cache_hit = True
+      else:
+         self.cache_hit = None
 
 class I_shell(Instruction):
 
