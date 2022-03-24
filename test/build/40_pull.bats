@@ -2,7 +2,7 @@ load ../common
 
 setup () {
     scope standard
-    [[ $CH_BUILDER = ch-image ]] || skip 'ch-image only'
+    [[ $CH_TEST_BUILDER = ch-image ]] || skip 'ch-image only'
 }
 
 image_ref_parse () {
@@ -228,7 +228,7 @@ directory      'fd_member'
 symbolic link  'fs_link' -> 'fs_target'
 regular file   'fs_target'
 symbolic link  'link_b0rken' -> 'doesnotexist'
-symbolic link  'link_imageonly' -> '/test'
+symbolic link  'link_imageonly' -> '../test'
 symbolic link  'link_self' -> 'link_self'
 directory      'sd_link'
 regular file   'sd_target'

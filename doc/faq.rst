@@ -80,24 +80,6 @@ There is a lot of information here, and it comes in this order:
 *Note:* Despite the structured format, the error messages are not guaranteed
 to be machine-readable.
 
-Tarball build fails with “No command specified”
------------------------------------------------
-
-The full error from :code:`ch-builder2tar` or :code:`ch-build2dir` is::
-
-  docker: Error response from daemon: No command specified.
-
-You will also see it with various plain Docker commands.
-
-This happens when there is no default command specified in the Dockerfile or
-any of its ancestors. Some base images specify one (e.g., Debian) and others
-don’t (e.g., Alpine). Docker requires this even for commands that don’t seem
-like they should need it, such as :code:`docker create` (which is what trips
-up Charliecloud).
-
-The solution is to add a default command to your Dockerfile, such as
-:code:`CMD ["true"]`.
-
 :code:`ch-run` fails with “can't re-mount image read-only”
 ----------------------------------------------------------
 
@@ -144,6 +126,21 @@ for details.) For example::
 Alternatively, certificate verification can be disabled entirely with the
 :code:`--tls-no-verify` flag. However, users should enable this option only if
 they have other means to be confident in the registry's identity.
+
+"storage directory seems invalid"
+---------------------------------
+
+Charliecloud uses its *storage directory* (:code:`/var/tmp/$USER.sh` by
+default) for various internal uses. As such, Charliecloud needs complete
+control over this directory's contents. This error happens when the storage
+directory exists but its contents do not match what's expected, including if
+it's an empty directory, which is to protect against using common temporary
+directories like :code:`/tmp` or :code:`/var/tmp` as the storage directory.
+
+Let Charliecloud create the storage directory. For example, if you want to use
+:code:`/big/containers/$USER/charlie` for the storage directory (e.g., by
+setting :code:`CH_IMAGE_STORAGE`), ensure :code:`/big/containers/$USER` exists
+but do not create the final directory :code:`charlie`.
 
 
 Unexpected behavior
