@@ -131,6 +131,10 @@ def main(cli_):
    global env
    env = Environment()
 
+   # Set up build Labels
+   global label
+   label = Label()
+
    # Read input file.
    if (cli.file == "-" or cli.context == "-"):
       text = ch.ossafe(sys.stdin.read, "can't read stdin")
@@ -322,6 +326,7 @@ class Arg(Instruction):
          self.value = self.value_default()
       if (self.value is not None):
          self.value = variables_sub(self.value, env.env_build)
+         print(self.value)
 
    def str_(self):
       if (self.value is None):
@@ -624,6 +629,41 @@ class I_env_space(Env):
       v = ch.tree_terminals_cat(self.tree, "LINE_CHUNK")
       self.value = variables_sub(unescape(v), env.env_build)
 
+###############
+
+class Lab(Instruction):
+
+   def str_(self):
+      return "%s='%s'" % (self.key, self.value)
+
+   def execute_(self):
+      label.label[self.key] = self.value
+      with ch.open_(images[image_i].unpack_path // "/ch/environment", "wt") \
+           as fp:
+         for (k, v) in label.label.items():
+            print("%s=%s" % (k, v), file=fp)
+
+
+class I_label_equals(Lab):
+
+   def __init__(self, *args):
+      super().__init__(*args)
+      self.key = ch.tree_terminal(self.tree, "WORD", 0)
+      v = ch.tree_terminal(self.tree, "WORD", 1)
+      if (v is None):
+         v = ch.tree_terminal(self.tree, "STRING_QUOTED")
+      self.value = variables_sub(unescape(v), label.label_build)
+
+
+class I_label_space(Lab):
+
+   def __init__(self, *args):
+      super().__init__(*args)
+      self.key = ch.tree_terminal(self.tree, "WORD")
+      v = ch.tree_terminals_cat(self.tree, "LINE_CHUNK")
+      self.value = variables_sub(unescape(v), label.label_build)
+
+###############
 
 class I_from_(Instruction):
 
@@ -757,7 +797,6 @@ class I_workdir(Instruction):
       env.chdir(self.path)
       ch.mkdirs(images[image_i].unpack_path // env.workdir)
 
-
 class I_uns_forever(Instruction_Supported_Never):
 
    def __init__(self, *args):
@@ -849,6 +888,33 @@ class Environment:
       # This resets only things that aren't part of the image metadata.
       self.arg = { k: v for (k, v) in ARG_DEFAULTS.items() if v is not None }
 
+
+class Label:
+   """Label data. Pass to image metadata."""
+
+   __slots__ = ("arg",)
+
+   def __init__(self):
+      self.reset()
+
+   @property
+   def label(self):
+      if (image_i == -1):
+         return dict()
+      else:
+         return images[image_i].metadata["labels"]
+
+   @label.setter
+   def label(self, x):
+      images[image_i].metadata["labels"] = x
+
+   @property
+   def label_build(self):
+      return { **self.arg, **self.label }
+
+   def reset(self):
+      # This resets only things that aren't part of the image metadata.
+      self.arg = { k: v for (k, v) in ARG_DEFAULTS.items() if v is not None }
 
 ## Supporting functions ###
 
